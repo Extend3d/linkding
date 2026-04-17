@@ -1,7 +1,9 @@
 import logging
+import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -40,6 +42,34 @@ def _load_website_metadata_cached(url: str):
     return _load_website_metadata(url)
 
 
+def _is_instagram_account_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.netloc not in ("www.instagram.com", "instagram.com"):
+        return None
+    match = re.match(r"^/([^/]+)/?$", parsed.path)
+    if not match:
+        return None
+    username = match.group(1)
+    non_account = {"p", "reel", "reels", "explore", "stories", "tv", "accounts", "about", "legal"}
+    return None if username in non_account else username
+
+
+def _load_instagram_profile_pic(username: str) -> str | None:
+    try:
+        import instaloader
+
+        session_file = os.environ.get("LD_INSTAGRAM_SESSION_FILE")
+        L = instaloader.Instaloader()
+        if session_file and os.path.exists(session_file):
+            filename = os.path.basename(session_file)
+            session_username = filename.replace("session-", "", 1)
+            L.load_session_from_file(session_username, session_file)
+        profile = instaloader.Profile.from_username(L.context, username)
+        return profile.profile_pic_url
+    except Exception:
+        return None
+
+
 def _load_website_metadata(url: str):
     title = None
     description = None
@@ -70,14 +100,19 @@ def _load_website_metadata(url: str):
                 else None
             )
 
-        image_tag = soup.find("meta", attrs={"property": "og:image"})
-        preview_image = image_tag["content"].strip() if image_tag else None
-        if (
-            preview_image
-            and not preview_image.startswith("http://")
-            and not preview_image.startswith("https://")
-        ):
-            preview_image = urljoin(url, preview_image)
+        instagram_username = _is_instagram_account_url(url)
+        if instagram_username:
+            preview_image = _load_instagram_profile_pic(instagram_username)
+
+        if not preview_image:
+            image_tag = soup.find("meta", attrs={"property": "og:image"})
+            preview_image = image_tag["content"].strip() if image_tag else None
+            if (
+                preview_image
+                and not preview_image.startswith("http://")
+                and not preview_image.startswith("https://")
+            ):
+                preview_image = urljoin(url, preview_image)
 
         end = timezone.now()
         logger.debug(f"Parsing duration: {end - start}")

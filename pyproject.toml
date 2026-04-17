@@ -11,6 +11,7 @@ dependencies = [
     "django>=6.0",
     "djangorestframework>=3.16.1",
     "huey>=2.5.5",
+    "instaloader>=4.13",
     "markdown>=3.10",
     "mozilla-django-oidc>=5.0.2",
     "requests>=2.32.5",
