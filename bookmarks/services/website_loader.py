@@ -54,7 +54,7 @@ def _is_instagram_account_url(url: str) -> str | None:
     return None if username in non_account else username
 
 
-def _load_instagram_profile_pic(username: str) -> str | None:
+def _load_instagram_metadata(url: str, username: str) -> WebsiteMetadata:
     try:
         import instaloader
 
@@ -63,17 +63,33 @@ def _load_instagram_profile_pic(username: str) -> str | None:
         if session_file and os.path.exists(session_file):
             filename = os.path.basename(session_file)
             session_username = filename.replace("session-", "", 1)
-            L.load_session_from_file(session_username, session_file)
+            try:
+                L.load_session_from_file(session_username, session_file)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to authenticate with Instagram session file "
+                    f"{session_file!r}: {e}"
+                )
         profile = instaloader.Profile.from_username(L.context, username)
-        return profile.profile_pic_url
+
+        full_name = (profile.full_name or "").strip()
+        title = f"{full_name} (@{username})" if full_name else f"@{username}"
+        biography = (profile.biography or "").strip()
+        description = biography or None
+
+        return WebsiteMetadata(
+            url=url,
+            title=title,
+            description=description,
+            preview_image=profile.profile_pic_url,
+        )
     except Exception:
-        return None
+        return WebsiteMetadata(
+            url=url, title=None, description=None, preview_image=None
+        )
 
 
-def _load_website_metadata(url: str):
-    title = None
-    description = None
-    preview_image = None
+def _scrape_html_metadata(url: str, metadata: WebsiteMetadata) -> None:
     try:
         start = timezone.now()
         page_text = load_page(url)
@@ -83,28 +99,29 @@ def _load_website_metadata(url: str):
         start = timezone.now()
         soup = BeautifulSoup(page_text, "html.parser")
 
-        if soup.title and soup.title.string:
-            title = soup.title.string.strip()
-        description_tag = soup.find("meta", attrs={"name": "description"})
-        description = (
-            description_tag["content"].strip()
-            if description_tag and description_tag["content"]
-            else None
-        )
+        if metadata.title is None:
+            if soup.title and soup.title.string:
+                metadata.title = soup.title.string.strip()
 
-        if not description:
-            description_tag = soup.find("meta", attrs={"property": "og:description"})
-            description = (
+        if metadata.description is None:
+            description_tag = soup.find("meta", attrs={"name": "description"})
+            metadata.description = (
                 description_tag["content"].strip()
                 if description_tag and description_tag["content"]
                 else None
             )
 
-        instagram_username = _is_instagram_account_url(url)
-        if instagram_username:
-            preview_image = _load_instagram_profile_pic(instagram_username)
+            if not metadata.description:
+                description_tag = soup.find(
+                    "meta", attrs={"property": "og:description"}
+                )
+                metadata.description = (
+                    description_tag["content"].strip()
+                    if description_tag and description_tag["content"]
+                    else None
+                )
 
-        if not preview_image:
+        if metadata.preview_image is None:
             image_tag = soup.find("meta", attrs={"property": "og:image"})
             preview_image = image_tag["content"].strip() if image_tag else None
             if (
@@ -113,15 +130,28 @@ def _load_website_metadata(url: str):
                 and not preview_image.startswith("https://")
             ):
                 preview_image = urljoin(url, preview_image)
+            metadata.preview_image = preview_image
 
         end = timezone.now()
         logger.debug(f"Parsing duration: {end - start}")
     except Exception:
         pass
 
-    return WebsiteMetadata(
-        url=url, title=title, description=description, preview_image=preview_image
-    )
+
+def _load_website_metadata(url: str):
+    if username := _is_instagram_account_url(url):
+        metadata = _load_instagram_metadata(url, username)
+    # elif match := _is_some_future_domain_url(url):
+    #     metadata = _load_some_future_metadata(url, match)
+    else:
+        metadata = WebsiteMetadata(
+            url=url, title=None, description=None, preview_image=None
+        )
+
+    if not (metadata.title and metadata.description and metadata.preview_image):
+        _scrape_html_metadata(url, metadata)
+
+    return metadata
 
 
 CHUNK_SIZE = 50 * 1024
