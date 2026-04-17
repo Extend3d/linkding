@@ -46,7 +46,7 @@ def _is_instagram_account_url(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.netloc not in ("www.instagram.com", "instagram.com"):
         return None
-    match = re.match(r"^/([^/]+)/?$", parsed.path)
+    match = re.match(r"^/([^/]+)(?:/reels?)?/?$", parsed.path)
     if not match:
         return None
     username = match.group(1)
