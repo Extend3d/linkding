@@ -46,12 +46,36 @@ def _is_instagram_account_url(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.netloc not in ("www.instagram.com", "instagram.com"):
         return None
-    match = re.match(r"^/([^/]+)(?:/reels?)?/?$", parsed.path)
-    if not match:
+
+    # Path segments that are reserved by Instagram and never represent a username.
+    non_account = {
+        "p", "reel", "reels", "explore", "tv", "accounts",
+        "about", "legal", "developer", "directory", "web",
+        "challenge", "privacy", "terms", "session", "api",
+        "ads", "business", "creator", "press", "blog",
+    }
+
+    segments = [s for s in parsed.path.split("/") if s]
+    if not segments:
         return None
-    username = match.group(1)
-    non_account = {"p", "reel", "reels", "explore", "stories", "tv", "accounts", "about", "legal"}
-    return None if username in non_account else username
+
+    # Stories URLs put the username in the second segment, e.g.
+    # /stories/<username>/ or /stories/<username>/<story_id>/
+    if segments[0] == "stories" and len(segments) >= 2: 
+        candidate = segments[1]
+    else:
+        candidate = segments[0]
+
+    if candidate in non_account:
+        return None
+
+    # Instagram usernames allow letters, digits, periods and underscores,
+    # and are at most 30 characters long.
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", candidate):
+        return None
+
+    # If we get here, it's a valid Instagram username
+    return candidate
 
 
 def _load_instagram_metadata(url: str, username: str) -> WebsiteMetadata:
