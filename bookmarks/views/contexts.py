@@ -272,6 +272,103 @@ class ActiveBookmarkListContext(BookmarkListContext):
     request_context = ActiveBookmarksContext
 
 
+CAROUSEL_MAX_ROW_ITEMS = 25
+
+
+class CarouselGroup:
+    def __init__(self, name: str, filter_url: str, is_untagged: bool = False):
+        self.name = name
+        self.filter_url = filter_url
+        self.is_untagged = is_untagged
+        self.items: list[BookmarkItem] = []
+
+    def add(self, item: "BookmarkItem"):
+        self.items.append(item)
+
+    @property
+    def rows(self) -> list[list["BookmarkItem"]]:
+        # Break large groups into chunks of CAROUSEL_MAX_ROW_ITEMS so the
+        # template can render one independently-scrollable carousel per chunk.
+        # A group with <= CAROUSEL_MAX_ROW_ITEMS items produces a single row.
+        size = CAROUSEL_MAX_ROW_ITEMS
+        items = self.items
+        if len(items) <= size:
+            return [items]
+        return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+class BookmarkCarouselContext:
+    request_context = ActiveBookmarksContext
+
+    def __init__(self, request: HttpRequest, search: BookmarkSearch) -> None:
+        request_context = self.request_context(request)
+        user = request.user
+        user_profile = request.user_profile
+
+        self.request = request
+        self.search = search
+        self.query_is_valid = request_context.query_is_valid
+        self.query_error_message = request_context.query_error_message
+
+        query_set = request_context.get_bookmark_query_set(self.search)
+        bookmarks = list(query_set)
+        # Prefetch related objects to avoid N+1 queries when accessing tags/owner
+        models.prefetch_related_objects(bookmarks, "owner", "tags")
+
+        # Build groups keyed by lowercased tag name so we keep stable identity
+        # while still rendering using the original case.
+        groups_by_key: dict[str, CarouselGroup] = {}
+        untagged_group = CarouselGroup(
+            name="Untagged",
+            filter_url=request_context.index(add={"q": ""}),
+            is_untagged=True,
+        )
+
+        for bookmark in bookmarks:
+            item = BookmarkItem(request_context, bookmark, user, user_profile)
+            tags = list(bookmark.tags.all())
+            if not tags:
+                untagged_group.add(item)
+                continue
+            for tag in tags:
+                key = tag.name.lower()
+                group = groups_by_key.get(key)
+                if group is None:
+                    group = CarouselGroup(
+                        name=tag.name,
+                        filter_url=request_context.index(add={"q": f"#{tag.name}"}),
+                    )
+                    groups_by_key[key] = group
+                group.add(item)
+
+        groups = sorted(groups_by_key.values(), key=lambda g: g.name.lower())
+        if untagged_group.items:
+            groups.append(untagged_group)
+
+        self.groups = groups
+        self.is_empty = len(bookmarks) == 0
+        self.bookmarks_total = len(bookmarks)
+
+        self.return_url = request_context.index()
+        self.action_url = request_context.action()
+
+        self.link_target = user_profile.bookmark_link_target
+        self.date_display = user_profile.bookmark_date_display
+        self.description_display = user_profile.bookmark_description_display
+        self.description_max_lines = user_profile.bookmark_description_max_lines
+        self.show_url = user_profile.display_url
+        self.show_view_action = user_profile.display_view_bookmark_action
+        self.show_edit_action = user_profile.display_edit_bookmark_action
+        self.show_archive_action = user_profile.display_archive_bookmark_action
+        self.show_remove_action = user_profile.display_remove_bookmark_action
+        self.show_favicons = user_profile.enable_favicons
+        self.show_preview_images = user_profile.enable_preview_images
+        self.show_notes = user_profile.permanent_notes
+        self.collapse_side_panel = user_profile.collapse_side_panel
+        self.is_preview = False
+        self.snapshot_feature_enabled = settings.LD_ENABLE_SNAPSHOTS
+
+
 class ArchivedBookmarkListContext(BookmarkListContext):
     list_title = "Archived bookmarks"
     search_mode = "archived"

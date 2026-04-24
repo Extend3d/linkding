@@ -8,8 +8,11 @@ class BookmarkPage extends HeadlessElement {
     this.onBulkActionChange = this.onBulkActionChange.bind(this);
     this.onToggleAll = this.onToggleAll.bind(this);
     this.onToggleBookmark = this.onToggleBookmark.bind(this);
+    this.onCarouselWheel = this.onCarouselWheel.bind(this);
+    this.onCarouselOverscrollEnd = this.onCarouselOverscrollEnd.bind(this);
 
     this.oldItems = [];
+    this.boundCarousels = [];
     this.update();
     document.addEventListener("bookmark-list-updated", this.update);
   }
@@ -18,12 +21,131 @@ class BookmarkPage extends HeadlessElement {
     document.removeEventListener("bookmark-list-updated", this.update);
   }
 
+  pruneInactiveLayout() {
+    // The page renders both the mobile (flat list) and desktop (carousels)
+    // layouts so Turbo can swap either fragment in. Remove the inactive one
+    // entirely so its <li>s and form inputs aren't visible to bulk-edit /
+    // shortcut selectors and aren't submitted with the form.
+    const isDesktop = window.matchMedia("(min-width: 841px)").matches;
+    const inactiveSelector = isDesktop ? ".layout-mobile" : ".layout-desktop";
+    this.querySelectorAll(inactiveSelector).forEach((node) => node.remove());
+  }
+
   update() {
+    this.pruneInactiveLayout();
     const items = this.querySelectorAll("ul.bookmark-list > li");
     this.updateTooltips(items);
     this.updateNotesToggles(items, this.oldItems);
     this.updateBulkEdit(items, this.oldItems);
+    this.updateCarouselWheelScroll();
     this.oldItems = items;
+  }
+
+  updateCarouselWheelScroll() {
+    // Translate vertical mouse-wheel input into horizontal scroll on each
+    // carousel <ul>, so users with a traditional scroll wheel can traverse
+    // tag rows without having to shift+wheel or click the scrollbar.
+    this.boundCarousels.forEach((el) => {
+      el.removeEventListener("wheel", this.onCarouselWheel);
+      this.resetCarouselOverscroll(el);
+    });
+
+    const carousels = Array.from(
+      this.querySelectorAll("ul.bookmark-list.carousel"),
+    );
+    carousels.forEach((el) => {
+      el.addEventListener("wheel", this.onCarouselWheel, { passive: false });
+    });
+    this.boundCarousels = carousels;
+  }
+
+  onCarouselWheel(event) {
+    const el = event.currentTarget;
+    // Trackpads commonly emit a non-zero deltaX for diagonal/horizontal
+    // gestures; don't interfere with those, the native behaviour is correct.
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      return;
+    }
+    if (event.deltaY === 0) {
+      return;
+    }
+    // If the carousel content fits entirely, don't hijack the wheel - let the
+    // page scroll vertically as usual.
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    if (maxScroll <= 1) {
+      return;
+    }
+
+    // Some browsers report deltaY in "lines" (mode 1) or "pages" (mode 2);
+    // translate to pixels so the scroll distance feels consistent.
+    const multiplier =
+      event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? el.clientWidth : 1;
+    const delta = event.deltaY * multiplier;
+
+    const atStart = el.scrollLeft <= 0;
+    const atEnd = el.scrollLeft >= maxScroll - 1;
+    const pastEnd = delta > 0 && atEnd;
+    const pastStart = delta < 0 && atStart;
+
+    // Always capture the wheel on a scrollable carousel, even at the ends.
+    // The alternative (letting the page scroll vertically when the user hits
+    // an edge) makes it hard to "just scroll a carousel" without the page
+    // jumping once the end is reached.
+    event.preventDefault();
+
+    if (pastEnd || pastStart) {
+      this.applyCarouselOverscroll(el, delta);
+    } else {
+      this.resetCarouselOverscroll(el);
+      el.scrollBy({ left: delta, behavior: "auto" });
+    }
+  }
+
+  applyCarouselOverscroll(el, delta) {
+    // Subtle rubber-band: accumulate a heavily-damped displacement, clamp it
+    // to a small cap so the carousel can't be pulled too far, and schedule a
+    // snap-back to 0 via CSS transition after a brief idle window.
+    const MAX = 48;
+    const DAMPING = 0.2;
+    const current = el._overscrollX || 0;
+    let next = current + delta * DAMPING;
+    if (next > MAX) next = MAX;
+    if (next < -MAX) next = -MAX;
+    el._overscrollX = next;
+
+    // Suppress the transition while we're tracking the wheel so the transform
+    // follows input 1:1; the class is removed during snap-back so the CSS
+    // transition takes over.
+    el.classList.add("overscrolling");
+    el.style.transform = `translateX(${-next}px)`;
+
+    clearTimeout(el._overscrollTimer);
+    el._overscrollTimer = setTimeout(() => {
+      el.classList.remove("overscrolling");
+      el.style.transform = "";
+      el._overscrollX = 0;
+      // Belt-and-braces cleanup in case transitionend doesn't fire (e.g. the
+      // element was invisible).
+      el.addEventListener("transitionend", this.onCarouselOverscrollEnd, {
+        once: true,
+      });
+    }, 120);
+  }
+
+  resetCarouselOverscroll(el) {
+    if (!el._overscrollX && !el._overscrollTimer) {
+      return;
+    }
+    clearTimeout(el._overscrollTimer);
+    el._overscrollTimer = null;
+    el._overscrollX = 0;
+    el.classList.remove("overscrolling");
+    el.style.transform = "";
+  }
+
+  onCarouselOverscrollEnd(event) {
+    const el = event.currentTarget;
+    el._overscrollTimer = null;
   }
 
   updateTooltips(items) {
@@ -124,7 +246,20 @@ class BookmarkPage extends HeadlessElement {
     this.updateExecuteButton();
   }
 
-  onToggleBookmark() {
+  onToggleBookmark(event) {
+    // The carousel layout can render the same bookmark in multiple tag
+    // carousels; keep all checkboxes for a given bookmark id in sync so the
+    // user-visible selection matches what gets POSTed (which is also deduped
+    // server-side as a safety net).
+    const changed = event?.target;
+    if (changed && changed.value) {
+      this.bookmarkCheckboxes.forEach((checkbox) => {
+        if (checkbox !== changed && checkbox.value === changed.value) {
+          checkbox.checked = changed.checked;
+        }
+      });
+    }
+
     const allChecked = this.bookmarkCheckboxes.every((checkbox) => {
       return checkbox.checked;
     });

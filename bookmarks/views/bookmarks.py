@@ -54,11 +54,19 @@ def index(request: HttpRequest):
         request, contexts.ActiveBookmarkDetailsContext
     )
 
+    # The carousel layout is only used on the active bookmarks index. Skip
+    # building it for Turbo frame requests targeting the details modal since
+    # those don't render the bookmark list area at all.
+    bookmark_carousel = None
+    if not turbo.is_frame(request, "details-modal"):
+        bookmark_carousel = contexts.BookmarkCarouselContext(request, search)
+
     return render_bookmarks_view(
         request,
         {
             "page_title": "Bookmarks - Linkding",
             "bookmark_list": bookmark_list,
+            "bookmark_carousel": bookmark_carousel,
             "bundles": bundles,
             "tag_cloud": tag_cloud,
             "details": bookmark_details,
@@ -393,8 +401,10 @@ def handle_action(request: HttpRequest, query: QuerySet[Bookmark] = None):
             # Query full list of bookmarks across all pages
             bookmark_ids = query.only("id").values_list("id", flat=True)
         else:
-            # Use only selected bookmarks
-            bookmark_ids = request.POST.getlist("bookmark_id")
+            # Use only selected bookmarks. Dedupe to defend against the
+            # carousel layout submitting the same bookmark id more than once
+            # (a single bookmark can appear in multiple tag carousels).
+            bookmark_ids = list(dict.fromkeys(request.POST.getlist("bookmark_id")))
 
         if bulk_action == "bulk_archive":
             return archive_bookmarks(bookmark_ids, request.user)

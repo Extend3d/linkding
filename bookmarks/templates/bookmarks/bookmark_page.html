@@ -29,7 +29,14 @@
         {% if bookmark_list.bulk_edit_enabled %}
           {% include 'bookmarks/bulk_edit_bar.html' %}
         {% endif %}
-        <div id="bookmark-list-container">{% include 'bookmarks/bookmark_list.html' %}</div>
+        <div id="bookmark-list-container">
+          {% if bookmark_carousel %}
+            <div class="layout-mobile">{% include 'bookmarks/bookmark_list.html' %}</div>
+            <div class="layout-desktop">{% include 'bookmarks/bookmark_carousels.html' %}</div>
+          {% else %}
+            {% include 'bookmarks/bookmark_list.html' %}
+          {% endif %}
+        </div>
       </form>
     </main>
     {# Filters #}
